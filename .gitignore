@@ -1,0 +1,6 @@
+# Compiled binaries
+/server
+/client
+
+# Config with secrets
+server.yaml

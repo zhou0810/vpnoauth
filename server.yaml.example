@@ -1,0 +1,36 @@
+# VPNoAuth Server Configuration
+
+# Server hostname (used for TLS certificate and OAuth redirect)
+domain: vpn.example.com
+
+# Listen address for HTTPS server
+listen_addr: ":443"
+
+# Google OAuth2 configuration
+# Create credentials at: https://console.cloud.google.com/apis/credentials
+google:
+  client_id: "xxx.apps.googleusercontent.com"
+  client_secret: "xxx"
+  # Only allow users with email addresses from this domain
+  allowed_domain: "example.com"
+
+# WireGuard configuration
+wireguard:
+  # WireGuard interface name
+  interface: "wg0"
+  # Server's VPN address (CIDR notation)
+  address: "10.0.0.1/24"
+  # WireGuard listen port
+  listen_port: 51820
+  # Server's WireGuard private key (generate with: wg genkey)
+  private_key: "<server-private-key>"
+  # Server's WireGuard public key (generate with: echo <private-key> | wg pubkey)
+  public_key: "<server-public-key>"
+  # Public endpoint for clients to connect to
+  endpoint: "vpn.example.com:51820"
+  # DNS server pushed to clients
+  dns: "1.1.1.1"
+  # How long peers stay active before automatic removal
+  peer_ttl: "8h"
+  # What traffic clients route through the VPN
+  allowed_ips: "0.0.0.0/0"
