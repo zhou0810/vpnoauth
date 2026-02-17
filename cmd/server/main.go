@@ -3,15 +3,22 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/crypto/acme/autocert"
+
+	qrcode "github.com/skip2/go-qrcode"
 
 	"github.com/jzhou/vpnoauth/internal/auth"
 	"github.com/jzhou/vpnoauth/internal/config"
@@ -126,6 +133,82 @@ func main() {
 		w.Write([]byte("ok"))
 	})
 
+	// Web flow: entry point redirects to OAuth with mode=web
+	mux.HandleFunc("/web/connect", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/auth/login?mode=web", http.StatusFound)
+	})
+
+	// Web flow: result page with QR code
+	mux.HandleFunc("/web/result", func(w http.ResponseWriter, r *http.Request) {
+		token := r.URL.Query().Get("token")
+		if token == "" {
+			http.Error(w, "missing token", http.StatusBadRequest)
+			return
+		}
+
+		email, ok := authHandler.ValidateAndConsumeToken(token)
+		if !ok {
+			http.Error(w, "invalid or expired token", http.StatusUnauthorized)
+			return
+		}
+
+		// Generate WireGuard keypair server-side
+		privKeyBytes, err := exec.Command("wg", "genkey").Output()
+		if err != nil {
+			log.Printf("wg genkey failed: %v", err)
+			http.Error(w, "failed to generate keypair", http.StatusInternalServerError)
+			return
+		}
+		privKey := strings.TrimSpace(string(privKeyBytes))
+
+		pubKeyCmd := exec.Command("wg", "pubkey")
+		pubKeyCmd.Stdin = strings.NewReader(privKey)
+		pubKeyBytes, err := pubKeyCmd.Output()
+		if err != nil {
+			log.Printf("wg pubkey failed: %v", err)
+			http.Error(w, "failed to generate keypair", http.StatusInternalServerError)
+			return
+		}
+		pubKey := strings.TrimSpace(string(pubKeyBytes))
+
+		log.Printf("Web flow: registering peer for %s", email)
+
+		peer, err := wgMgr.AddPeer(pubKey, peerTTL)
+		if err != nil {
+			log.Printf("Failed to add peer: %v", err)
+			http.Error(w, "failed to register peer", http.StatusInternalServerError)
+			return
+		}
+
+		// Build WireGuard config (same format as CLI client)
+		clientAddr := strings.Replace(peer.AllowedIP, "/32", "/24", 1)
+		wgConf := fmt.Sprintf(`[Interface]
+PrivateKey = %s
+Address = %s
+DNS = %s
+
+[Peer]
+PublicKey = %s
+Endpoint = %s
+AllowedIPs = %s
+PersistentKeepalive = 25
+`, privKey, clientAddr, cfg.WireGuard.DNS, cfg.WireGuard.PublicKey, cfg.WireGuard.Endpoint, cfg.WireGuard.AllowedIPs)
+
+		// Generate QR code
+		qrPNG, err := qrcode.Encode(wgConf, qrcode.Medium, 512)
+		if err != nil {
+			log.Printf("QR code generation failed: %v", err)
+			http.Error(w, "failed to generate QR code", http.StatusInternalServerError)
+			return
+		}
+		qrBase64 := base64.StdEncoding.EncodeToString(qrPNG)
+
+		expiryStr := peer.ExpiresAt.Local().Format(time.RFC3339)
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, webResultPage, qrBase64, wgConf, expiryStr)
+	})
+
 	var server *http.Server
 
 	if *tlsCert != "" && *tlsKey != "" {
@@ -188,3 +271,42 @@ func main() {
 		}
 	}
 }
+
+const webResultPage = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VPN Configuration</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 600px; margin: 40px auto; padding: 0 20px; background: #f5f5f5; }
+  .card { background: white; border-radius: 12px; padding: 30px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+  h1 { color: #333; font-size: 1.5em; margin-top: 0; }
+  .qr { text-align: center; margin: 20px 0; }
+  .qr img { max-width: 100%%; width: 300px; height: 300px; }
+  .config { background: #f8f8f8; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; font-family: monospace; font-size: 13px; white-space: pre-wrap; word-break: break-all; position: relative; }
+  .expiry { color: #666; font-size: 0.9em; margin-top: 16px; }
+  .copy-btn { position: absolute; top: 8px; right: 8px; background: #007aff; color: white; border: none; border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
+  .copy-btn:hover { background: #005ec4; }
+  .instructions { color: #555; font-size: 0.95em; line-height: 1.5; }
+  ol { padding-left: 20px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>WireGuard VPN Configuration</h1>
+  <p class="instructions">Scan this QR code with the WireGuard app:</p>
+  <div class="qr"><img src="data:image/png;base64,%s" alt="WireGuard QR Code"></div>
+  <ol class="instructions">
+    <li>Open the WireGuard app on your device</li>
+    <li>Tap <strong>+</strong> then <strong>Create from QR code</strong></li>
+    <li>Scan the QR code above</li>
+    <li>Name the tunnel and activate it</li>
+  </ol>
+  <p class="instructions">Or copy the configuration manually:</p>
+  <div class="config"><button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('conf').textContent)">Copy</button><span id="conf">%s</span></div>
+  <p class="expiry">Expires: %s</p>
+</div>
+</body>
+</html>`
+

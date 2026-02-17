@@ -22,6 +22,7 @@ type tokenInfo struct {
 
 type stateInfo struct {
 	RedirectPort string
+	WebMode      bool
 	CreatedAt    time.Time
 }
 
@@ -69,8 +70,11 @@ func (h *Handler) ValidateAndConsumeToken(token string) (string, bool) {
 }
 
 func (h *Handler) HandleLogin(w http.ResponseWriter, r *http.Request) {
+	mode := r.URL.Query().Get("mode")
+	webMode := mode == "web"
+
 	redirectPort := r.URL.Query().Get("redirect_port")
-	if redirectPort == "" {
+	if !webMode && redirectPort == "" {
 		http.Error(w, "missing redirect_port", http.StatusBadRequest)
 		return
 	}
@@ -84,6 +88,7 @@ func (h *Handler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	h.mu.Lock()
 	h.states[state] = &stateInfo{
 		RedirectPort: redirectPort,
+		WebMode:      webMode,
 		CreatedAt:    time.Now(),
 	}
 	h.mu.Unlock()
@@ -154,8 +159,13 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Authenticated %s, issuing token", email)
 
-	// Redirect to client's local callback
-	redirectURL := fmt.Sprintf("http://localhost:%s/callback?token=%s", si.RedirectPort, authToken)
+	// Redirect to web result page or client's local callback
+	var redirectURL string
+	if si.WebMode {
+		redirectURL = fmt.Sprintf("https://%s/web/result?token=%s", h.serverDomain, authToken)
+	} else {
+		redirectURL = fmt.Sprintf("http://localhost:%s/callback?token=%s", si.RedirectPort, authToken)
+	}
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
