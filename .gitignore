@@ -4,3 +4,5 @@
 
 # Config with secrets
 server.yaml
+vpnoauth-client
+vpnoauth-server

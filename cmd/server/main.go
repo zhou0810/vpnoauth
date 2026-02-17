@@ -35,6 +35,8 @@ type registerResponse struct {
 func main() {
 	configPath := flag.String("config", "server.yaml", "path to server config")
 	devMode := flag.Bool("dev", false, "run in dev mode (self-signed TLS)")
+	tlsCert := flag.String("tls-cert", "", "path to TLS certificate (for self-signed)")
+	tlsKey := flag.String("tls-key", "", "path to TLS private key (for self-signed)")
 	flag.Parse()
 
 	cfg, err := config.LoadServerConfig(*configPath)
@@ -126,7 +128,14 @@ func main() {
 
 	var server *http.Server
 
-	if *devMode {
+	if *tlsCert != "" && *tlsKey != "" {
+		// Self-signed TLS mode
+		server = &http.Server{
+			Addr:    cfg.ListenAddr,
+			Handler: mux,
+		}
+		log.Printf("Starting server on %s with self-signed TLS", cfg.ListenAddr)
+	} else if *devMode {
 		// Dev mode: plain HTTP
 		server = &http.Server{
 			Addr:    cfg.ListenAddr,
@@ -165,7 +174,11 @@ func main() {
 		server.Shutdown(context.Background())
 	}()
 
-	if *devMode {
+	if *tlsCert != "" && *tlsKey != "" {
+		if err := server.ListenAndServeTLS(*tlsCert, *tlsKey); err != http.ErrServerClosed {
+			log.Fatalf("Server error: %v", err)
+		}
+	} else if *devMode {
 		if err := server.ListenAndServe(); err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)
 		}

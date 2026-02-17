@@ -88,12 +88,12 @@ func connect(server string, insecure bool) {
 	defer callbackSrv.Shutdown(context.Background())
 
 	// Open browser
-	scheme := "https"
-	loginURL := fmt.Sprintf("%s://%s/auth/login?redirect_port=%d", scheme, server, port)
+	loginURL := fmt.Sprintf("https://%s/auth/login?redirect_port=%d", server, port)
 	log.Printf("Opening browser for authentication...")
-	if err := exec.Command("xdg-open", loginURL).Start(); err != nil {
-		log.Printf("Failed to open browser automatically. Please visit:\n  %s", loginURL)
+	if !openBrowser(loginURL) {
+		log.Printf("Failed to open browser automatically.")
 	}
+	log.Printf("If the browser didn't open, visit:\n  %s", loginURL)
 
 	// Wait for token
 	log.Printf("Waiting for authentication...")
@@ -160,6 +160,21 @@ func disconnect() {
 	os.Remove(confPath)
 }
 
+func openBrowser(url string) bool {
+	// When running under sudo, xdg-open as root won't have a display session.
+	// Try running as the original user instead.
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		cmd := exec.Command("sudo", "-u", sudoUser, "xdg-open", url)
+		if err := cmd.Start(); err == nil {
+			return true
+		}
+	}
+	if err := exec.Command("xdg-open", url).Start(); err == nil {
+		return true
+	}
+	return false
+}
+
 func generateKeypair() (privKey, pubKey string, err error) {
 	privKeyBytes, err := exec.Command("wg", "genkey").Output()
 	if err != nil {
@@ -187,8 +202,7 @@ func registerPeer(server, token, pubKey string, insecure bool) (*registerRespons
 		return nil, err
 	}
 
-	scheme := "https"
-	url := fmt.Sprintf("%s://%s/api/register", scheme, server)
+	url := fmt.Sprintf("https://%s/api/register", server)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	if insecure {
