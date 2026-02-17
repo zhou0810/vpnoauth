@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -112,34 +111,12 @@ func connect(server string, insecure bool) {
 		log.Fatalf("Failed to register peer: %v", err)
 	}
 
-	// Parse client IP (remove /32 suffix for interface address, use /32 as-is for routing)
+	// Parse client IP (remove /32 suffix for interface address, use /24)
 	clientAddr := strings.Replace(regResp.ClientIP, "/32", "/24", 1)
 
-	// Write WireGuard config
-	wgConf := fmt.Sprintf(`[Interface]
-PrivateKey = %s
-Address = %s
-DNS = %s
-
-[Peer]
-PublicKey = %s
-Endpoint = %s
-AllowedIPs = %s
-PersistentKeepalive = 25
-`, privKey, clientAddr, regResp.DNS, regResp.ServerPubKey, regResp.Endpoint, regResp.AllowedIPs)
-
-	confPath := fmt.Sprintf("/etc/wireguard/%s.conf", wgInterface)
-	if err := os.WriteFile(confPath, []byte(wgConf), 0600); err != nil {
-		log.Fatalf("Failed to write WireGuard config (try running with sudo): %v", err)
-	}
-	log.Printf("Wrote WireGuard config to %s", confPath)
-
-	// Bring up interface
-	cmd := exec.Command("wg-quick", "up", wgInterface)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		log.Fatalf("Failed to bring up WireGuard interface: %v", err)
+	// Set up WireGuard tunnel
+	if err := setupTunnel(privKey, clientAddr, regResp.DNS, regResp.ServerPubKey, regResp.Endpoint, regResp.AllowedIPs); err != nil {
+		log.Fatalf("Failed to set up tunnel: %v", err)
 	}
 
 	expiry, _ := time.Parse(time.RFC3339, regResp.Expiry)
@@ -147,50 +124,10 @@ PersistentKeepalive = 25
 }
 
 func disconnect() {
-	cmd := exec.Command("wg-quick", "down", wgInterface)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		log.Fatalf("Failed to bring down WireGuard interface: %v", err)
+	if err := teardownTunnel(); err != nil {
+		log.Fatalf("Failed to disconnect: %v", err)
 	}
 	log.Printf("VPN disconnected")
-
-	// Clean up config
-	confPath := fmt.Sprintf("/etc/wireguard/%s.conf", wgInterface)
-	os.Remove(confPath)
-}
-
-func openBrowser(url string) bool {
-	// When running under sudo, xdg-open as root won't have a display session.
-	// Try running as the original user instead.
-	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
-		cmd := exec.Command("sudo", "-u", sudoUser, "xdg-open", url)
-		if err := cmd.Start(); err == nil {
-			return true
-		}
-	}
-	if err := exec.Command("xdg-open", url).Start(); err == nil {
-		return true
-	}
-	return false
-}
-
-func generateKeypair() (privKey, pubKey string, err error) {
-	privKeyBytes, err := exec.Command("wg", "genkey").Output()
-	if err != nil {
-		return "", "", fmt.Errorf("wg genkey: %w", err)
-	}
-	privKey = strings.TrimSpace(string(privKeyBytes))
-
-	cmd := exec.Command("wg", "pubkey")
-	cmd.Stdin = strings.NewReader(privKey)
-	pubKeyBytes, err := cmd.Output()
-	if err != nil {
-		return "", "", fmt.Errorf("wg pubkey: %w", err)
-	}
-	pubKey = strings.TrimSpace(string(pubKeyBytes))
-
-	return privKey, pubKey, nil
 }
 
 func registerPeer(server, token, pubKey string, insecure bool) (*registerResponse, error) {
