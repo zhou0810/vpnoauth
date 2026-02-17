@@ -1,6 +1,8 @@
 # Compiled binaries
 /server
+/server.exe
 /client
+/client.exe
 
 # Config with secrets
 server.yaml
